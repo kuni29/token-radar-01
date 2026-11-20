@@ -1,4 +1,4 @@
-// Token Radar's dashboard (model radar-3). It reads window.RADAR, written beside dashboard/ by
+// Token Radar's dashboard (model radar-4). It reads window.RADAR, written beside dashboard/ by
 // main.ts, and renders the ranked board, the value model behind it, a filterable and sortable table,
 // a per-protocol detail view with the model's own arithmetic and the protocol's farm plan, and the
 // live-token protocols the peer multiples are priced from. No network: every byte it shows is in
@@ -92,8 +92,8 @@
   });
   main.appendChild(el('section', { class: 'model', 'aria-label': 'How the value is built' }, [
     el('h2', { text: 'How the value is built' }),
-    el('div', { class: 'formula', text: 'implied value = TVL \u00D7 peer multiple \u00D7 size factor \u00D7 growth factor \u00D7 maturity factor \u00D7 breadth factor' }),
-    el('p', { text: 'The peer multiple is what the market already pays for a token in the same line of work: the median market-cap / TVL of this snapshot\u2019s tokenised protocols in the protocol\u2019s own category, shrunk toward the global median (\u00D7' + DATA.global_multiple.toFixed(2) + ') by sample size so a thin category cannot shout. The size factor follows the market\u2019s own size curve: fitted over those same tokenised protocols, the multiple paid per TVL dollar falls as TVL grows (slope ' + DATA.size_curve.gamma.toFixed(2) + ' in log-log terms), so the factor is \u00D71 at the median tokenised TVL of ' + money(DATA.size_curve.ref_tvl_usd) + ', below it for the giants and above it for the small. The growth factor follows the protocol\u2019s own seven-day TVL change, the maturity factor how long it has run at scale with no token, and the breadth factor how many chains it runs on. Nothing is priced from a list of names: change the snapshot and every figure moves.' }),
+    el('div', { class: 'formula', text: 'implied value = TVL \u00D7 peer multiple \u00D7 size factor' }),
+    el('p', { text: 'The two factors are one fit, not two: over this snapshot\u2019s tokenised protocols the model fits a single pricing line \u2014 log market cap against log TVL \u2014 with one offset per category, the line and the offsets fitted together until they agree. The peer multiple is the multiple the protocol\u2019s own category prices at when every peer is first read at one common size, the median tokenised TVL of ' + money(DATA.size_curve.ref_tvl_usd) + ' (the market-wide line states \u00D7' + DATA.global_multiple.toFixed(2) + ' there), with each category\u2019s offset pulled toward that line by its sample size so a thin category cannot shout. The size factor then carries a protocol from that common size to its own: the multiple paid per TVL dollar falls as TVL grows (slope ' + DATA.size_curve.gamma.toFixed(2) + ' in log-log terms), so the factor is \u00D71 at the reference TVL, below it for the giants and above it for the small. Reading peers at a common size first is what keeps a category of giants from being charged the size discount twice. Nothing is priced from a list of names: change the snapshot and every figure moves.' }),
     el('p', { text: 'Checked against the market itself: pricing each of the snapshot\u2019s ' + DATA.validation.sample + ' tokenised protocols as if it had no token, from peers that exclude it, this model\u2019s typical miss against the market cap the market actually gave it is \u00D7' + DATA.validation.median_miss_x.toFixed(1) + ', with ' + DATA.validation.within_2x_pct.toFixed(0) + '% priced within \u00D72. Without the size curve the same check misses by \u00D7' + DATA.validation.flat_median_miss_x.toFixed(1) + ' with ' + DATA.validation.flat_within_2x_pct.toFixed(0) + '% within \u00D72: the curve is the difference. The rest of the miss is real: token prices carry float and speculation no snapshot field records, which is why every row also carries a confidence.' }),
     el('div', { class: 'chips' }, chips),
   ]));
@@ -246,7 +246,7 @@
       ? 'Priced at the global peer multiple: this snapshot carries no tokenised protocol in its category to price from.'
       : r.peer_multiple <= DATA.global_multiple * 1.25
         ? 'Priced mostly at the global peer multiple: this snapshot carries only ' + r.peer_sample + ' tokenised ' + (r.category || '') + ' protocol' + (r.peer_sample === 1 ? '' : 's') + ' to price from, too thin a sample to move the multiple far.'
-        : 'Priced at the ' + (r.category || 'market') + ' peer multiple: the median market-cap / TVL of ' + r.peer_sample + ' tokenised ' + (r.category || '') + ' protocol' + (r.peer_sample === 1 ? '' : 's') + ' in this snapshot, pulled toward the global median by its sample size' + (r.peer_sample < 3 ? '; the sample is thin, so read the exact figure with the confidence below' : '') + '.';
+        : 'Priced at the ' + (r.category || 'market') + ' peer multiple: what ' + r.peer_sample + ' tokenised ' + (r.category || '') + ' protocol' + (r.peer_sample === 1 ? '' : 's') + ' in this snapshot price at when each is read at the reference size, pulled toward the market-wide line by its sample size' + (r.peer_sample < 3 ? '; the sample is thin, so read the exact figure with the confidence below' : '') + '.';
     dialog.appendChild(el('div', { class: 'detail-head' }, [
       el('div', null, [
         el('h2', { id: 'detail-title', text: r.name }),
@@ -266,10 +266,7 @@
     var bd = el('div', { class: 'breakdown' });
     bd.appendChild(brow('TVL (the base)', money(r.tvl_usd), money(r.tvl_usd), Math.min(1, Math.log10(Math.max(r.tvl_usd, 1)) / 11)));
     bd.appendChild(brow('Peer multiple', mult(r.peer_multiple), mult(r.peer_multiple), r.peer_multiple / 2));
-    bd.appendChild(brow('Size factor (TVL vs the ' + money(DATA.size_curve.ref_tvl_usd) + ' median)', mult(r.size_multiplier), mult(r.size_multiplier), r.size_multiplier / 5));
-    bd.appendChild(brow('Growth factor (7d ' + pct(r.change_7d) + ')', mult(r.growth_multiplier), mult(r.growth_multiplier), r.growth_multiplier / 1.9));
-    bd.appendChild(brow('Maturity factor (' + ageText(r.age_days) + ' tokenless)', mult(r.maturity_multiplier), mult(r.maturity_multiplier), r.maturity_multiplier));
-    bd.appendChild(brow('Breadth factor (' + r.chains.length + (r.chains.length === 1 ? ' chain' : ' chains') + ')', mult(r.breadth_multiplier), mult(r.breadth_multiplier), r.breadth_multiplier / 1.1));
+    bd.appendChild(brow('Size factor (TVL vs the ' + money(DATA.size_curve.ref_tvl_usd) + ' median)', mult(r.size_multiplier), mult(r.size_multiplier), r.size_multiplier / 10));
     body.appendChild(bd);
     body.appendChild(el('p', { class: 'note', text: peerNote + ' The farmer pool is the model\u2019s own assumption: a launch at the implied value that allocates 5 to 10 per cent to its community puts that much in farmers\u2019 hands, before any split among them.' }));
     body.appendChild(el('h3', { text: 'The farm plan' }));
@@ -299,7 +296,7 @@
   });
   main.appendChild(el('section', { class: 'live', 'aria-label': 'Already trading' }, [
     el('h2', { text: 'Already trading — the peer evidence' }),
-    el('p', { text: 'These protocols\u2019 tokens already trade, so the radar never ranks them: it prices the board from them instead. Each one\u2019s market-cap / TVL is a vote on what a launch in its category is worth, and the board\u2019s peer multiples are the medians of votes like these.' }),
+    el('p', { text: 'These protocols\u2019 tokens already trade, so the radar never ranks them: it prices the board from them instead. Each one\u2019s market-cap / TVL is a vote on what a launch in its category is worth, and the board\u2019s peer multiples are read off votes like these \u2014 every voter first restated at one common size, so a giant\u2019s vote is not discounted twice.' }),
     el('table', null, [
       el('thead', null, [el('tr', null, [th('Protocol'), th('Category'), th('TVL', null, 'n'), th('Market cap', null, 'n'), th('Cap / TVL', null, 'n'), th('7d', null, 'n')])]),
       liveBody,
