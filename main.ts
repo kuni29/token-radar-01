@@ -1,4 +1,4 @@
-// Token Radar (model radar-3): a token-radar-01 entry, Node 22, standard library only.
+// Token Radar (model radar-4): a token-radar-01 entry, Node 22, standard library only.
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the peer-multiple and size-curve model in lib/model.ts, writes the ranked board to
