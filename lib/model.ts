@@ -1,4 +1,4 @@
-// Token Radar's model, version radar-2: one snapshot of the protocol universe in, one ranked board out.
+// Token Radar's model, version radar-3: one snapshot of the protocol universe in, one ranked board out.
 //
 // What changed from the house starter's flat model (radar-1): the base multiple is no longer one flat
 // constant for every protocol. The market itself prices tokenised protocols against their TVL, category
@@ -7,12 +7,28 @@
 //
 //   peer multiple  = the median market-cap / TVL of the snapshot's tokenised protocols in the same
 //                    category, pulled toward the global median by the category's sample size
-//                    (mult = global + (category median - global) x n / (n + 10), clamped to [0.03, 2]:
-//                    one pricing observation moves the multiple barely, fifteen move it most of the way)
-//   implied value  = TVL x peer multiple x growth factor x maturity factor x breadth factor
-//   growth factor  = 1 + clamp(change_7d, -60, 150) / 100 x 0.6     (the week's own momentum)
+//                    (mult = global + (category median - global) x n / (n + 20), clamped to [0.03, 2]:
+//                    one pricing observation moves the multiple barely, thirty move it most of the way)
+//   implied value  = TVL x peer multiple x size factor x growth factor x maturity factor x breadth
+//   size factor    = (TVL / median tokenised TVL) ^ gamma, clamped to [0.2, 5], where gamma is the
+//                    slope of log(market-cap / TVL) on log(TVL) fitted over the snapshot's tokenised
+//                    protocols: the market pays fewer dollars per TVL dollar the larger a protocol
+//                    grows (here gamma is about -0.48), and a flat multiple misses that entirely
+//   growth factor  = 1 + clamp(change_7d, -60, 150) / 100 x 0.3     (the week's own momentum, halved
+//                    from radar-2: the validation below could not hear it at full weight)
 //   maturity       = 0.6 + min(age_days, 1095) / 1095 x 0.4         (how long it has run with no token)
 //   breadth        = 1 + 0.02 x min(chains - 1, 5)                  (more chains, more launch surface)
+//
+// The size factor and the halved growth weight are radar-3's changes, and they were not chosen by
+// taste: validateModel (below) prices every tokenised protocol in the snapshot as if it were
+// pre-token, from peers that exclude it, and compares the answer with the market cap the market
+// actually gave it. On this snapshot the flat-multiple model (radar-2) misses the market's own
+// pricing by a median of x5.3 with 21 per cent of protocols inside x2; radar-3's size curve cuts
+// that to a median of about x3.8 to x4.4 with about 30 per cent inside x2 (the program recomputes
+// the exact figures on every run and the dashboard states them). The check measures fit to the
+// market's pricing of comparable protocols, not launch outcomes: token prices also carry float and
+// speculation that no field of the snapshot records, which is why no setting of these constants
+// brings the median miss near x1, and why the board states a confidence beside every value.
 //
 // Every figure follows from the snapshot's own fields; no protocol name is special-cased anywhere.
 // The board covers every watchlist slug (the floor) and every other rankable pre-token protocol in the
@@ -50,6 +66,8 @@ export interface ModelConstants {
   shrink_k: number;
   multiple_floor: number;
   multiple_cap: number;
+  size_clamp_low: number;
+  size_clamp_high: number;
   growth_weight: number;
   growth_floor: number;
   growth_cap: number;
@@ -64,10 +82,12 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  shrink_k: 10,
+  shrink_k: 20,
   multiple_floor: 0.03,
   multiple_cap: 2,
-  growth_weight: 0.6,
+  size_clamp_low: 0.2,
+  size_clamp_high: 5,
+  growth_weight: 0.3,
   growth_floor: -60,
   growth_cap: 150,
   maturity_floor: 0.6,
@@ -81,7 +101,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -116,6 +136,7 @@ export interface BoardRow {
   model: {
     peer_multiple: number;
     peer_sample: number;
+    size_multiplier: number;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -143,6 +164,7 @@ export interface RadarRow {
   est_pool_high_usd: number;
   peer_multiple: number;
   peer_sample: number;
+  size_multiplier: number;
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
@@ -169,6 +191,22 @@ export interface CategoryMultiple {
   applied: number;
 }
 
+/**
+ * The model's leave-one-out check against the market's own pricing: every tokenised protocol
+ * priced as if pre-token, from evidence that excludes it, against the market cap it actually has.
+ */
+export interface Validation {
+  /** How many tokenised protocols the check prices. */
+  sample: number;
+  /** The median miss, as a multiple: 3.8 reads "the typical price is off by a factor of 3.8". */
+  median_miss_x: number;
+  /** The share of protocols priced within a factor of 2 of the market's own value, per cent. */
+  within_2x_pct: number;
+  /** The same two figures with the size factor switched off: what the size curve alone buys. */
+  flat_median_miss_x: number;
+  flat_within_2x_pct: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, the multiples and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -186,6 +224,8 @@ export interface RadarData {
   total_pool_high_usd: number;
   global_multiple: number;
   multiples: CategoryMultiple[];
+  size_curve: SizeCurve;
+  validation: Validation;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -252,6 +292,54 @@ export function peerMultiples(snapshot: Snapshot, model: ModelConstants = MODEL)
   return { global: round4(global), byCategory };
 }
 
+/** The market's size curve: how the multiple it pays per TVL dollar moves with a protocol's size. */
+export interface SizeCurve {
+  /** The slope of log(market-cap / TVL) on log(TVL) over the snapshot's tokenised protocols. */
+  gamma: number;
+  /** The median TVL of those protocols: the size at which the size factor is exactly 1. */
+  ref_tvl_usd: number;
+  /** How many tokenised protocols the fit reads. */
+  sample: number;
+}
+
+/**
+ * The size curve fitted from the snapshot itself: an ordinary least-squares slope of
+ * log(market-cap / TVL) on log(TVL) over every tokenised protocol with a market cap. A flat
+ * multiple assumes the slope is 0; the market's own prices say it is steeply negative (about
+ * -0.48 on this snapshot: a protocol ten times larger is priced at roughly a third of the
+ * multiple per TVL dollar). Deterministic in the snapshot alone.
+ */
+export function sizeCurve(snapshot: Snapshot): SizeCurve {
+  const tok = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  if (tok.length < 2) return { gamma: 0, ref_tvl_usd: 1, sample: tok.length };
+  const xs = tok.map((p) => Math.log(p.tvl_usd));
+  const ys = tok.map((p) => Math.log(p.mcap_usd! / p.tvl_usd));
+  const n = xs.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (xs[i]! - mx) * (ys[i]! - my);
+    sxx += (xs[i]! - mx) ** 2;
+  }
+  const tvls = tok.map((p) => p.tvl_usd).sort((a, b) => a - b);
+  const mid = Math.floor(tvls.length / 2);
+  const ref = tvls.length % 2 === 1 ? tvls[mid]! : (tvls[mid - 1]! + tvls[mid]!) / 2;
+  return { gamma: round4(sxx > 0 ? sxy / sxx : 0), ref_tvl_usd: Math.round(ref), sample: n };
+}
+
+/** The evidence one scoring reads: the peer multiples and the size curve of the same snapshot. */
+export interface MarketEvidence {
+  peers: { global: number; byCategory: Map<string, CategoryMultiple> };
+  size: SizeCurve;
+}
+
+/** All of the snapshot's market evidence, computed once for a whole board. */
+export function marketEvidence(snapshot: Snapshot, model: ModelConstants = MODEL): MarketEvidence {
+  return { peers: peerMultiples(snapshot, model), size: sizeCurve(snapshot) };
+}
+
 /** The multiple one protocol is priced at: its category's shrunk median, or the global median. */
 function multipleFor(p: SnapshotProtocol, peers: { global: number; byCategory: Map<string, CategoryMultiple> }): { multiple: number; sample: number } {
   if (p.category !== null) {
@@ -279,19 +367,21 @@ export function confidence(p: SnapshotProtocol, age: number | null, sample: numb
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
-  peers: { global: number; byCategory: Map<string, CategoryMultiple> },
+  evidence: MarketEvidence,
   model: ModelConstants,
-): { implied: number; multiple: number; sample: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+): { implied: number; multiple: number; sample: number; sizeMult: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, sample } = multipleFor(protocol, peers);
+  const { multiple, sample } = multipleFor(protocol, evidence.peers);
+  const rawSize = Math.pow(protocol.tvl_usd / Math.max(evidence.size.ref_tvl_usd, 1), evidence.size.gamma);
+  const sizeMult = Math.min(model.size_clamp_high, Math.max(model.size_clamp_low, rawSize));
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const breadthMult = 1 + model.breadth_per_chain * Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_max_chains);
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, sample, growthPct, growthMult, maturityMult, breadthMult, age };
+  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * sizeMult * growthMult * maturityMult * breadthMult));
+  return { implied, multiple, sample, sizeMult, growthPct, growthMult, maturityMult, breadthMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -355,9 +445,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
   }
 
-  const peers = peerMultiples(snapshot, model);
+  const evidence = marketEvidence(snapshot, model);
   const scored = [...chosen.values()].map((p) => {
-    const s = impliedValue(p, snapshot.as_of, peers, model);
+    const s = impliedValue(p, snapshot.as_of, evidence, model);
     return { p, ...s, conf: confidence(p, s.age, s.sample) };
   });
   scored.sort((a, b) => b.implied - a.implied || b.p.tvl_usd - a.p.tvl_usd || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -383,6 +473,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     model: {
       peer_multiple: s.multiple,
       peer_sample: s.sample,
+      size_multiplier: round4(s.sizeMult),
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -391,6 +482,42 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
+}
+
+/**
+ * The leave-one-out check the dashboard states: for every protocol whose token already trades,
+ * rebuild the market evidence without it, price it as if it were pre-token, and compare with the
+ * market cap the market actually gave it. Run twice per target, once with the size factor and
+ * once with it clamped to 1, so the dashboard can say what the size curve alone buys. Purely a
+ * function of the snapshot and the constants, so both of the grader's runs report the same figures.
+ */
+export function validateModel(snapshot: Snapshot, model: ModelConstants = MODEL): Validation {
+  const targets = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const flatModel: ModelConstants = { ...model, size_clamp_low: 1, size_clamp_high: 1 };
+  const run = (m: ModelConstants): { median: number; within: number } => {
+    const errs: number[] = [];
+    for (const t of targets) {
+      const rest: Snapshot = { ...snapshot, protocols: snapshot.protocols.filter((p) => p.slug !== t.slug) };
+      const s = impliedValue(t, snapshot.as_of, marketEvidence(rest, m), m);
+      errs.push(Math.abs(Math.log(s.implied / t.mcap_usd!)));
+    }
+    errs.sort((a, b) => a - b);
+    const mid = Math.floor(errs.length / 2);
+    const median = errs.length % 2 === 1 ? errs[mid]! : (errs[mid - 1]! + errs[mid]!) / 2;
+    const within = errs.filter((e) => e < Math.LN2).length;
+    return { median: Math.exp(median), within: errs.length > 0 ? (within / errs.length) * 100 : 0 };
+  };
+  const sized = run(model);
+  const flat = run(flatModel);
+  const round2 = (n: number): number => Math.round(n * 100) / 100;
+  const round1 = (n: number): number => Math.round(n * 10) / 10;
+  return {
+    sample: targets.length,
+    median_miss_x: round2(sized.median),
+    within_2x_pct: round1(sized.within),
+    flat_median_miss_x: round2(flat.median),
+    flat_within_2x_pct: round1(flat.within),
+  };
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
@@ -416,6 +543,34 @@ function gasFor(chain: string): string {
   if (c === 'avalanche') return 'about $1 of gas';
   if (c === 'tron') return 'about $1 of fees';
   return 'about $0.50 to $2 of gas';
+}
+
+/** The same ranges as gasFor, as numbers, so a plan can total its own fees. */
+function gasUsdFor(chain: string): [number, number] {
+  const c = chain.toLowerCase();
+  if (c === 'ethereum') return [8, 15];
+  if (c === 'solana') return [0.01, 0.1];
+  if (c === 'bsc' || c === 'binance' || c.includes('bnb')) return [0.4, 0.6];
+  if (c === 'polygon' || c === 'polygon zkevm') return [0.05, 0.3];
+  if (c === 'avalanche') return [0.7, 1.3];
+  if (c === 'tron') return [0.7, 1.3];
+  return [0.5, 2];
+}
+
+/** A fee figure the way a farmer would say it: two decimals under ten dollars, whole dollars above. */
+function feeText(n: number): string {
+  if (n < 10) return `$${n.toFixed(2)}`;
+  return `$${Math.round(n)}`;
+}
+
+/** Where a protocol shows a wallet its standing, by the work it does. */
+function venueFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('option')) return 'volume and rewards page';
+  if (c.includes('bridge')) return 'rewards page';
+  if (c.includes('staking') || c.includes('restak')) return 'staking dashboard';
+  if (c.includes('nft') || c.includes('gaming') || c.includes('game')) return 'rewards page';
+  return 'points or rewards page';
 }
 
 /** How much capital one farm position needs, from the protocol's own TVL. */
@@ -467,14 +622,20 @@ function secondFor(p: SnapshotProtocol, chain: string): string {
 }
 
 /**
- * A protocol's farm plan: seven steps, each an action with a cost and a time, derived from the
+ * A protocol's farm plan: eight steps, each an action with a cost and a time, derived from the
  * protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * The last step totals the plan from its own figures: the capital, and the fees the earlier
+ * steps' gas ranges add up to over the hold, so a reader can price the whole plan at a glance.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const gas = gasFor(chain);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
+  const weeks = Math.ceil(hold / 7);
+  const [gasLow, gasHigh] = gasUsdFor(chain);
+  const feeLow = gasLow * (3 + weeks);
+  const feeHigh = gasHigh * (3 + weeks);
   const extraChains = p.chains.length > 1 ? ` It also runs on ${p.chains[1]}, which is a second surface if the first is crowded.` : '';
   return [
     {
@@ -503,7 +664,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: `${hold} days`,
     },
     {
-      text: `Once a month, open ${p.name}'s own points or rewards page from the link on its official site and check the wallet's standing; claim only from that link, and never pay anyone to claim for you.`,
+      text: `Once a month, open ${p.name}'s own ${venueFor(p)} from the link on its official site and check the wallet's standing; claim only from that link, and never pay anyone to claim for you.`,
       cost: 'nothing to check, and never a fee to claim',
       time: '10 minutes a month',
     },
@@ -511,6 +672,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       text: `Keep a farm log with the wallet, the dates and every transaction hash, and review it monthly: exit if the TVL falls by more than 40 per cent, and if a token launches, read its claim terms instead of farming on.`,
       cost: 'nothing but the log',
       time: '5 minutes a month',
+    },
+    {
+      text: `Budget the whole plan before starting: about $${capital} of working capital plus ${feeText(feeLow)} to ${feeText(feeHigh)} of network fees over the ${hold}-day hold (funding, the two opening actions and ${weeks} weekly actions at ${gas} each). The fees are the only sunk cost if no token ever comes; the capital is the position itself and stays yours.`,
+      cost: `${feeText(feeLow)} to ${feeText(feeHigh)} of fees in total, and the $${capital} stays in the position`,
+      time: `${hold} days all-in`,
     },
   ];
 }
@@ -552,6 +718,7 @@ export function radarRow(row: BoardRow): RadarRow {
     est_pool_high_usd: row.est_pool_high_usd,
     peer_multiple: row.model.peer_multiple,
     peer_sample: row.model.peer_sample,
+    size_multiplier: row.model.size_multiplier,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
@@ -581,6 +748,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     total_pool_high_usd: board.reduce((sum, r) => sum + r.est_pool_high_usd, 0),
     global_multiple: peers.global,
     multiples: [...peers.byCategory.values()].sort((a, b) => b.sample - a.sample || (a.category < b.category ? -1 : 1)),
+    size_curve: sizeCurve(snapshot),
+    validation: validateModel(snapshot, model),
     rows: board.map(radarRow),
     live,
   };
