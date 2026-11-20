@@ -1,34 +1,43 @@
-// Token Radar's model, version radar-3: one snapshot of the protocol universe in, one ranked board out.
+// Token Radar's model, version radar-4: one snapshot of the protocol universe in, one ranked board out.
 //
-// What changed from the house starter's flat model (radar-1): the base multiple is no longer one flat
-// constant for every protocol. The market itself prices tokenised protocols against their TVL, category
-// by category, so this model reads those prices out of the same snapshot and applies them to the
-// protocols that record no token yet:
+// What changed from radar-3: the peer multiple and the size curve are no longer fitted separately
+// and multiplied together. They are one fit. The market's pricing of a tokenised protocol is read
+// as a line in log-log terms,
 //
-//   peer multiple  = the median market-cap / TVL of the snapshot's tokenised protocols in the same
-//                    category, pulled toward the global median by the category's sample size
-//                    (mult = global + (category median - global) x n / (n + 20), clamped to [0.03, 2]:
-//                    one pricing observation moves the multiple barely, thirty move it most of the way)
-//   implied value  = TVL x peer multiple x size factor x growth factor x maturity factor x breadth
-//   size factor    = (TVL / median tokenised TVL) ^ gamma, clamped to [0.2, 5], where gamma is the
-//                    slope of log(market-cap / TVL) on log(TVL) fitted over the snapshot's tokenised
-//                    protocols: the market pays fewer dollars per TVL dollar the larger a protocol
-//                    grows (here gamma is about -0.48), and a flat multiple misses that entirely
-//   growth factor  = 1 + clamp(change_7d, -60, 150) / 100 x 0.3     (the week's own momentum, halved
-//                    from radar-2: the validation below could not hear it at full weight)
-//   maturity       = 0.6 + min(age_days, 1095) / 1095 x 0.4         (how long it has run with no token)
-//   breadth        = 1 + 0.02 x min(chains - 1, 5)                  (more chains, more launch surface)
+//   log market cap  =  intercept + slope x log TVL + category offset,
 //
-// The size factor and the halved growth weight are radar-3's changes, and they were not chosen by
-// taste: validateModel (below) prices every tokenised protocol in the snapshot as if it were
-// pre-token, from peers that exclude it, and compares the answer with the market cap the market
-// actually gave it. On this snapshot the flat-multiple model (radar-2) misses the market's own
-// pricing by a median of x5.3 with 21 per cent of protocols inside x2; radar-3's size curve cuts
-// that to a median of about x3.8 to x4.4 with about 30 per cent inside x2 (the program recomputes
-// the exact figures on every run and the dashboard states them). The check measures fit to the
-// market's pricing of comparable protocols, not launch outcomes: token prices also carry float and
-// speculation that no field of the snapshot records, which is why no setting of these constants
-// brings the median miss near x1, and why the board states a confidence beside every value.
+// fitted over the snapshot's tokenised protocols by alternating two steps until they agree: the
+// line is refit on offset-adjusted caps, and each category's offset is reset to the median of its
+// residuals, pulled toward zero (the market-wide line) by the category's sample size
+// (offset x n / (n + 10)). Stated as the board's own factors, with gamma = slope - 1 (about -0.50
+// on this snapshot) and the reference TVL the median tokenised TVL:
+//
+//   peer multiple  = exp(intercept + category offset + gamma x log reference TVL): the multiple
+//                    the category's peers price at when read at one common size, clamped to
+//                    [0.03, 2]
+//   size factor    = (TVL / reference TVL) ^ gamma, clamped to [0.1, 10]
+//   implied value  = TVL x peer multiple x size factor
+//
+// Why one fit instead of radar-3's two: radar-3 took each category's median raw market-cap / TVL
+// and shrank it toward the global median, but a category whose protocols are mostly large had
+// already paid the size discount inside its own median, so the size factor then charged it twice
+// (and a category of small protocols was credited twice the other way). Reading every peer at the
+// reference size before comparing categories removes that double count. And radar-3's growth,
+// maturity and breadth factors are gone: once size and category are fitted jointly, the check
+// below cannot hear them (the residuals of the joint fit correlate with the seven-day change at
+// about +0.16 and with age and chain count at about zero), so they are no longer allowed to move
+// a price. The confidence score still reports how much of a protocol's record is present; it does
+// not price anything.
+//
+// The check is validateModel (below): every tokenised protocol in the snapshot is priced as if it
+// were pre-token, from a fit that excludes it, and compared with the market cap the market
+// actually gave it. On this snapshot radar-3's separate fits miss by a median of x4.15 with
+// 30.5 per cent of protocols inside x2; the joint fit cuts that to a median of about x3.3 with
+// about a third inside x2 (the program recomputes the exact figures on every run and the
+// dashboard states them). The check measures fit to the market's pricing of comparable protocols,
+// not launch outcomes: token prices also carry float and speculation that no field of the
+// snapshot records, which is why no setting of these constants brings the median miss near x1,
+// and why the board states a confidence beside every value.
 //
 // Every figure follows from the snapshot's own fields; no protocol name is special-cased anywhere.
 // The board covers every watchlist slug (the floor) and every other rankable pre-token protocol in the
@@ -68,40 +77,22 @@ export interface ModelConstants {
   multiple_cap: number;
   size_clamp_low: number;
   size_clamp_high: number;
-  growth_weight: number;
-  growth_floor: number;
-  growth_cap: number;
-  maturity_floor: number;
-  maturity_range: number;
-  maturity_days: number;
-  unknown_age_days: number;
-  breadth_per_chain: number;
-  breadth_max_chains: number;
   pool_low_pct: number;
   pool_high_pct: number;
 }
 
 export const MODEL: ModelConstants = {
-  shrink_k: 20,
+  shrink_k: 10,
   multiple_floor: 0.03,
   multiple_cap: 2,
-  size_clamp_low: 0.2,
-  size_clamp_high: 5,
-  growth_weight: 0.3,
-  growth_floor: -60,
-  growth_cap: 150,
-  maturity_floor: 0.6,
-  maturity_range: 0.4,
-  maturity_days: 1095,
-  unknown_age_days: 365,
-  breadth_per_chain: 0.02,
-  breadth_max_chains: 5,
+  size_clamp_low: 0.1,
+  size_clamp_high: 10,
   pool_low_pct: 5,
   pool_high_pct: 10,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -137,10 +128,6 @@ export interface BoardRow {
     peer_multiple: number;
     peer_sample: number;
     size_multiplier: number;
-    growth_pct: number;
-    growth_multiplier: number;
-    maturity_multiplier: number;
-    breadth_multiplier: number;
     age_days: number | null;
   };
   farm_steps: string[];
@@ -165,9 +152,6 @@ export interface RadarRow {
   peer_multiple: number;
   peer_sample: number;
   size_multiplier: number;
-  growth_multiplier: number;
-  maturity_multiplier: number;
-  breadth_multiplier: number;
   farm_steps: string[];
 }
 
@@ -198,11 +182,11 @@ export interface CategoryMultiple {
 export interface Validation {
   /** How many tokenised protocols the check prices. */
   sample: number;
-  /** The median miss, as a multiple: 3.8 reads "the typical price is off by a factor of 3.8". */
+  /** The median miss, as a multiple: 3.3 reads "the typical price is off by a factor of 3.3". */
   median_miss_x: number;
   /** The share of protocols priced within a factor of 2 of the market's own value, per cent. */
   within_2x_pct: number;
-  /** The same two figures with the size factor switched off: what the size curve alone buys. */
+  /** The same two figures with the size curve switched off: what the size curve alone buys. */
   flat_median_miss_x: number;
   flat_within_2x_pct: number;
 }
@@ -240,11 +224,6 @@ export class SnapshotError extends Error {
 
 const DAY_MS = 86_400_000;
 
-/** A finite number, else `fallback`. */
-function finite(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
@@ -263,35 +242,6 @@ function median(values: number[]): number {
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/**
- * The peer evidence: for every category, the market-cap / TVL ratios of the snapshot's tokenised
- * protocols in it, their median, and the multiple the model applies after shrinkage to the global
- * median. Deterministic in the snapshot alone.
- */
-export function peerMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): { global: number; byCategory: Map<string, CategoryMultiple> } {
-  const ratios = new Map<string, number[]>();
-  const all: number[] = [];
-  for (const p of snapshot.protocols) {
-    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
-    const ratio = p.mcap_usd / p.tvl_usd;
-    all.push(ratio);
-    if (p.category !== null) {
-      const list = ratios.get(p.category) ?? [];
-      list.push(ratio);
-      ratios.set(p.category, list);
-    }
-  }
-  const global = all.length > 0 ? median(all) : 0.2;
-  const byCategory = new Map<string, CategoryMultiple>();
-  for (const [category, list] of [...ratios.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-    const med = median(list);
-    const weight = list.length / (list.length + model.shrink_k);
-    const applied = Math.min(model.multiple_cap, Math.max(model.multiple_floor, global + (med - global) * weight));
-    byCategory.set(category, { category, sample: list.length, median: round4(med), applied: round4(applied) });
-  }
-  return { global: round4(global), byCategory };
-}
-
 /** The market's size curve: how the multiple it pays per TVL dollar moves with a protocol's size. */
 export interface SizeCurve {
   /** The slope of log(market-cap / TVL) on log(TVL) over the snapshot's tokenised protocols. */
@@ -303,50 +253,138 @@ export interface SizeCurve {
 }
 
 /**
- * The size curve fitted from the snapshot itself: an ordinary least-squares slope of
- * log(market-cap / TVL) on log(TVL) over every tokenised protocol with a market cap. A flat
- * multiple assumes the slope is 0; the market's own prices say it is steeply negative (about
- * -0.48 on this snapshot: a protocol ten times larger is priced at roughly a third of the
- * multiple per TVL dollar). Deterministic in the snapshot alone.
+ * The model's one fit: the market's pricing line and every category's offset from it, fitted
+ * together over the snapshot's tokenised protocols. `gamma` is the line's slope minus one: the
+ * size curve. `global_multiple` is the multiple the line itself states at the reference TVL, and
+ * each category's `applied` multiple is that figure moved by the category's shrunk offset.
  */
-export function sizeCurve(snapshot: Snapshot): SizeCurve {
-  const tok = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
-  if (tok.length < 2) return { gamma: 0, ref_tvl_usd: 1, sample: tok.length };
-  const xs = tok.map((p) => Math.log(p.tvl_usd));
-  const ys = tok.map((p) => Math.log(p.mcap_usd! / p.tvl_usd));
-  const n = xs.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  let sxy = 0;
-  let sxx = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (xs[i]! - mx) * (ys[i]! - my);
-    sxx += (xs[i]! - mx) ** 2;
-  }
-  const tvls = tok.map((p) => p.tvl_usd).sort((a, b) => a - b);
-  const mid = Math.floor(tvls.length / 2);
-  const ref = tvls.length % 2 === 1 ? tvls[mid]! : (tvls[mid - 1]! + tvls[mid]!) / 2;
-  return { gamma: round4(sxx > 0 ? sxy / sxx : 0), ref_tvl_usd: Math.round(ref), sample: n };
+export interface MarketFit {
+  /** The pricing line's intercept: log market cap at log TVL zero, before category offsets. */
+  intercept: number;
+  /** The pricing line's slope: log market cap on log TVL. */
+  slope: number;
+  /** slope - 1: how the multiple per TVL dollar moves with size. */
+  gamma: number;
+  /** The median tokenised TVL: the size at which the size factor is exactly 1. */
+  ref_tvl_usd: number;
+  /** How many tokenised protocols the fit reads. */
+  sample: number;
+  /** The multiple the market-wide line states at the reference TVL. */
+  global_multiple: number;
+  /** Every category's evidence: its own median multiple at the reference size, and the applied one. */
+  byCategory: Map<string, CategoryMultiple>;
 }
 
-/** The evidence one scoring reads: the peer multiples and the size curve of the same snapshot. */
+/**
+ * The joint fit, from the snapshot alone. The line and the offsets are alternated a fixed number
+ * of rounds (so the result is deterministic): refit the line on offset-adjusted caps, then reset
+ * each category's offset to its residuals' median pulled toward zero by n / (n + shrink_k).
+ * `fixedSlope` pins the slope (the validation's flat run pins it at 1: no size curve).
+ */
+export function marketFit(snapshot: Snapshot, model: ModelConstants = MODEL, fixedSlope?: number): MarketFit {
+  const tok = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  if (tok.length === 0) {
+    return { intercept: Math.log(0.2), slope: 1, gamma: 0, ref_tvl_usd: 1, sample: 0, global_multiple: 0.2, byCategory: new Map() };
+  }
+  const ref = median(tok.map((p) => p.tvl_usd));
+  const xs = tok.map((p) => Math.log(p.tvl_usd));
+  const ys = tok.map((p) => Math.log(p.mcap_usd!));
+  const groups = new Map<string, number[]>();
+  tok.forEach((p, i) => {
+    if (p.category === null) return;
+    const g = groups.get(p.category) ?? [];
+    g.push(i);
+    groups.set(p.category, g);
+  });
+  const offs = new Array<number>(tok.length).fill(0);
+  let a = 0;
+  let b = fixedSlope ?? 1;
+  for (let round = 0; round < 100; round++) {
+    const n = tok.length;
+    const mx = xs.reduce((s, v) => s + v, 0) / n;
+    const my = ys.reduce((s, v, i) => s + (v - offs[i]!), 0) / n;
+    if (fixedSlope === undefined) {
+      let sxy = 0;
+      let sxx = 0;
+      for (let i = 0; i < n; i++) {
+        sxy += (xs[i]! - mx) * (ys[i]! - offs[i]! - my);
+        sxx += (xs[i]! - mx) ** 2;
+      }
+      b = sxx > 0 ? sxy / sxx : 0;
+    }
+    a = my - b * mx;
+    for (const [, idxs] of groups) {
+      const m = median(idxs.map((i) => ys[i]! - (a + b * xs[i]!)));
+      const w = idxs.length / (idxs.length + model.shrink_k);
+      for (const i of idxs) offs[i] = m * w;
+    }
+  }
+  const gamma = b - 1;
+  const atRef = (logOffset: number): number => Math.exp(a + logOffset + gamma * Math.log(Math.max(ref, 1)));
+  const byCategory = new Map<string, CategoryMultiple>();
+  for (const [category, idxs] of [...groups.entries()].sort((x, y) => (x[0] < y[0] ? -1 : 1))) {
+    const medResid = median(idxs.map((i) => ys[i]! - (a + b * xs[i]!)));
+    byCategory.set(category, {
+      category,
+      sample: idxs.length,
+      median: round4(atRef(medResid)),
+      applied: round4(Math.min(model.multiple_cap, Math.max(model.multiple_floor, atRef(offs[idxs[0]!]!)))),
+    });
+  }
+  return {
+    intercept: a,
+    slope: b,
+    gamma,
+    ref_tvl_usd: ref,
+    sample: tok.length,
+    global_multiple: round4(Math.min(model.multiple_cap, Math.max(model.multiple_floor, atRef(0)))),
+    byCategory,
+  };
+}
+
+/**
+ * The peer evidence in radar-3's shape: the joint fit's global multiple and per-category
+ * multiples. Deterministic in the snapshot alone.
+ */
+export function peerMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): { global: number; byCategory: Map<string, CategoryMultiple> } {
+  const fit = marketFit(snapshot, model);
+  return { global: fit.global_multiple, byCategory: fit.byCategory };
+}
+
+/**
+ * The size curve of the joint fit: its gamma, its reference TVL and its sample. On this snapshot
+ * gamma is about -0.48: a protocol ten times larger is priced at roughly a third of the multiple
+ * per TVL dollar. Deterministic in the snapshot alone.
+ */
+export function sizeCurve(snapshot: Snapshot): SizeCurve {
+  const fit = marketFit(snapshot);
+  return { gamma: round4(fit.gamma), ref_tvl_usd: Math.round(fit.ref_tvl_usd), sample: fit.sample };
+}
+
+/** The evidence one scoring reads: the joint fit of the same snapshot. */
 export interface MarketEvidence {
   peers: { global: number; byCategory: Map<string, CategoryMultiple> };
   size: SizeCurve;
+  fit: MarketFit;
 }
 
 /** All of the snapshot's market evidence, computed once for a whole board. */
 export function marketEvidence(snapshot: Snapshot, model: ModelConstants = MODEL): MarketEvidence {
-  return { peers: peerMultiples(snapshot, model), size: sizeCurve(snapshot) };
+  const fit = marketFit(snapshot, model);
+  return {
+    peers: { global: fit.global_multiple, byCategory: fit.byCategory },
+    size: { gamma: round4(fit.gamma), ref_tvl_usd: Math.round(fit.ref_tvl_usd), sample: fit.sample },
+    fit,
+  };
 }
 
-/** The multiple one protocol is priced at: its category's shrunk median, or the global median. */
-function multipleFor(p: SnapshotProtocol, peers: { global: number; byCategory: Map<string, CategoryMultiple> }): { multiple: number; sample: number } {
+/** The multiple one protocol is priced at: its category's applied multiple, or the global one. */
+function multipleFor(p: SnapshotProtocol, fit: MarketFit): { multiple: number; sample: number } {
   if (p.category !== null) {
-    const entry = peers.byCategory.get(p.category);
+    const entry = fit.byCategory.get(p.category);
     if (entry !== undefined) return { multiple: entry.applied, sample: entry.sample };
   }
-  return { multiple: peers.global, sample: 0 };
+  return { multiple: fit.global_multiple, sample: 0 };
 }
 
 /** How much of the model's evidence one protocol's record carries, 0 to 100. */
@@ -369,19 +407,13 @@ export function impliedValue(
   asOf: string,
   evidence: MarketEvidence,
   model: ModelConstants,
-): { implied: number; multiple: number; sample: number; sizeMult: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+): { implied: number; multiple: number; sample: number; sizeMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, sample } = multipleFor(protocol, evidence.peers);
-  const rawSize = Math.pow(protocol.tvl_usd / Math.max(evidence.size.ref_tvl_usd, 1), evidence.size.gamma);
+  const { multiple, sample } = multipleFor(protocol, evidence.fit);
+  const rawSize = Math.pow(protocol.tvl_usd / Math.max(evidence.fit.ref_tvl_usd, 1), evidence.fit.gamma);
   const sizeMult = Math.min(model.size_clamp_high, Math.max(model.size_clamp_low, rawSize));
-  const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
-  const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const breadthMult = 1 + model.breadth_per_chain * Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_max_chains);
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * sizeMult * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, sample, sizeMult, growthPct, growthMult, maturityMult, breadthMult, age };
+  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * sizeMult));
+  return { implied, multiple, sample, sizeMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -474,10 +506,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       peer_multiple: s.multiple,
       peer_sample: s.sample,
       size_multiplier: round4(s.sizeMult),
-      growth_pct: s.growthPct,
-      growth_multiplier: round4(s.growthMult),
-      maturity_multiplier: round4(s.maturityMult),
-      breadth_multiplier: round4(s.breadthMult),
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
@@ -486,19 +514,25 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
 /**
  * The leave-one-out check the dashboard states: for every protocol whose token already trades,
- * rebuild the market evidence without it, price it as if it were pre-token, and compare with the
- * market cap the market actually gave it. Run twice per target, once with the size factor and
- * once with it clamped to 1, so the dashboard can say what the size curve alone buys. Purely a
- * function of the snapshot and the constants, so both of the grader's runs report the same figures.
+ * rebuild the joint fit without it, price it as if it were pre-token, and compare with the
+ * market cap the market actually gave it. Run twice per target, once with the fitted size curve
+ * and once with the slope pinned at 1 (no size curve), so the dashboard can say what the curve
+ * alone buys. Purely a function of the snapshot and the constants, so both of the grader's runs
+ * report the same figures.
  */
 export function validateModel(snapshot: Snapshot, model: ModelConstants = MODEL): Validation {
   const targets = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
-  const flatModel: ModelConstants = { ...model, size_clamp_low: 1, size_clamp_high: 1 };
-  const run = (m: ModelConstants): { median: number; within: number } => {
+  const run = (fixedSlope?: number): { median: number; within: number } => {
     const errs: number[] = [];
     for (const t of targets) {
       const rest: Snapshot = { ...snapshot, protocols: snapshot.protocols.filter((p) => p.slug !== t.slug) };
-      const s = impliedValue(t, snapshot.as_of, marketEvidence(rest, m), m);
+      const fit = marketFit(rest, model, fixedSlope);
+      const evidence: MarketEvidence = {
+        peers: { global: fit.global_multiple, byCategory: fit.byCategory },
+        size: { gamma: round4(fit.gamma), ref_tvl_usd: Math.round(fit.ref_tvl_usd), sample: fit.sample },
+        fit,
+      };
+      const s = impliedValue(t, snapshot.as_of, evidence, model);
       errs.push(Math.abs(Math.log(s.implied / t.mcap_usd!)));
     }
     errs.sort((a, b) => a - b);
@@ -507,8 +541,8 @@ export function validateModel(snapshot: Snapshot, model: ModelConstants = MODEL)
     const within = errs.filter((e) => e < Math.LN2).length;
     return { median: Math.exp(median), within: errs.length > 0 ? (within / errs.length) * 100 : 0 };
   };
-  const sized = run(model);
-  const flat = run(flatModel);
+  const sized = run(undefined);
+  const flat = run(1);
   const round2 = (n: number): number => Math.round(n * 100) / 100;
   const round1 = (n: number): number => Math.round(n * 10) / 10;
   return {
@@ -719,9 +753,6 @@ export function radarRow(row: BoardRow): RadarRow {
     peer_multiple: row.model.peer_multiple,
     peer_sample: row.model.peer_sample,
     size_multiplier: row.model.size_multiplier,
-    growth_multiplier: row.model.growth_multiplier,
-    maturity_multiplier: row.model.maturity_multiplier,
-    breadth_multiplier: row.model.breadth_multiplier,
     farm_steps: row.farm_steps,
   };
 }
